@@ -1,5 +1,6 @@
-import React, { useState, useRef, useCallback } from 'react'
-import { Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download, Trash2, Eye } from 'lucide-react'
+import React, { useState, useRef, useCallback, useMemo } from 'react'
+import { Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download, Trash2, Eye, RefreshCw, Minus } from 'lucide-react'
+import * as XLSX from 'xlsx'
 import { Card } from '@/components/Card'
 import { Button } from '@/components/Button'
 import { Table, Column } from '@/components/Table'
@@ -12,6 +13,7 @@ import dayjs from 'dayjs'
 interface PreviewBill extends Partial<Bill> {
   _rowError?: string
   _rowNumber?: number
+  _importStatus?: 'new' | 'exists'
 }
 
 interface FieldMapping {
@@ -126,7 +128,7 @@ function detectRiskLevel(daysToDue: number, amount: number): Bill['riskLevel'] {
 }
 
 export const BatchImport: React.FC = () => {
-  const { importLogs, importBills } = useWorkbenchStore()
+  const { importLogs, importBills, bills } = useWorkbenchStore()
   const [previewData, setPreviewData] = useState<PreviewBill[]>([])
   const [fileName, setFileName] = useState('')
   const [showPreview, setShowPreview] = useState(false)
@@ -135,75 +137,133 @@ export const BatchImport: React.FC = () => {
   const [isParsing, setIsParsing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  const existingBillNos = useMemo(() => {
+    const set = new Set<string>()
+    bills.forEach((b) => set.add(b.billNo.trim().toUpperCase()))
+    return set
+  }, [bills])
+
+  const parseRows = (rows: string[][]) => {
+    if (rows.length < 2) {
+      alert('文件内容不足，至少需要表头和一行数据')
+      return
+    }
+
+    const headers = rows[0].map((h) => (h ?? '').toString().trim())
+    const dataRows = rows.slice(1)
+
+    const billNoIdx = detectColumnIndex(headers, FIELD_MAPPING.billNo)
+    const amountIdx = detectColumnIndex(headers, FIELD_MAPPING.amount)
+    const issueDateIdx = detectColumnIndex(headers, FIELD_MAPPING.issueDate)
+    const dueDateIdx = detectColumnIndex(headers, FIELD_MAPPING.dueDate)
+    const acceptorIdx = detectColumnIndex(headers, FIELD_MAPPING.acceptorName)
+    const drawerIdx = detectColumnIndex(headers, FIELD_MAPPING.drawer)
+    const payeeIdx = detectColumnIndex(headers, FIELD_MAPPING.payee)
+    const holdTypeIdx = detectColumnIndex(headers, FIELD_MAPPING.holdType)
+
+    const previewBills: PreviewBill[] = dataRows.map((row, idx) => {
+      const billNo = billNoIdx >= 0 ? (row[billNoIdx] ?? '').toString().trim() : ''
+      const amount = amountIdx >= 0 ? parseAmount((row[amountIdx] ?? '').toString()) : 0
+      const issueDate = issueDateIdx >= 0 ? parseDate((row[issueDateIdx] ?? '').toString()) : ''
+      const dueDate = dueDateIdx >= 0 ? parseDate((row[dueDateIdx] ?? '').toString()) : ''
+      const daysToDue = dueDate ? calculateDaysToDue(dueDate) : 999
+      const acceptorName = acceptorIdx >= 0 ? (row[acceptorIdx] ?? '').toString().trim() : ''
+      const drawer = drawerIdx >= 0 ? (row[drawerIdx] ?? '').toString().trim() : ''
+      const payee = payeeIdx >= 0 ? (row[payeeIdx] ?? '').toString().trim() : ''
+      const holdTypeRaw = holdTypeIdx >= 0 ? (row[holdTypeIdx] ?? '').toString().trim() : ''
+      const holdType = /背书|转让|endorsed|已背书/i.test(holdTypeRaw) ? 'endorsed' : 'self_held'
+
+      const errors: string[] = []
+      if (!billNo) errors.push('票据号不能为空')
+      if (amount <= 0) errors.push('金额无效')
+      if (!dueDate) errors.push('到期日期无效')
+
+      const normalizedBillNo = billNo.trim().toUpperCase()
+      const importStatus: 'new' | 'exists' | undefined =
+        errors.length === 0 && normalizedBillNo
+          ? existingBillNos.has(normalizedBillNo)
+            ? 'exists'
+            : 'new'
+          : undefined
+
+      const bill: PreviewBill = {
+        billNo,
+        amount,
+        issueDate,
+        dueDate,
+        daysToDue,
+        acceptorName,
+        drawer,
+        payee,
+        holdType,
+        riskLevel: detectRiskLevel(daysToDue, amount),
+        _rowNumber: idx + 2,
+        _rowError: errors.length > 0 ? errors.join('；') : undefined,
+        _importStatus: importStatus,
+      }
+      return bill
+    })
+
+    setPreviewData(previewBills)
+    setShowPreview(true)
+  }
+
   const parseFile = useCallback(async (file: File) => {
     setFileName(file.name)
     setIsParsing(true)
 
     try {
-      const text = await file.text()
-      const rows = parseCSV(text)
+      const lowerName = file.name.toLowerCase()
+      const isExcel = lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')
+      const isCSV = lowerName.endsWith('.csv')
 
-      if (rows.length < 2) {
-        alert('CSV 文件内容不足，至少需要表头和一行数据')
+      if (!isExcel && !isCSV) {
+        alert('仅支持 CSV、XLSX、XLS 格式文件')
         setIsParsing(false)
         return
       }
 
-      const headers = rows[0].map((h) => h.trim())
-      const dataRows = rows.slice(1)
-
-      const billNoIdx = detectColumnIndex(headers, FIELD_MAPPING.billNo)
-      const amountIdx = detectColumnIndex(headers, FIELD_MAPPING.amount)
-      const issueDateIdx = detectColumnIndex(headers, FIELD_MAPPING.issueDate)
-      const dueDateIdx = detectColumnIndex(headers, FIELD_MAPPING.dueDate)
-      const acceptorIdx = detectColumnIndex(headers, FIELD_MAPPING.acceptorName)
-      const drawerIdx = detectColumnIndex(headers, FIELD_MAPPING.drawer)
-      const payeeIdx = detectColumnIndex(headers, FIELD_MAPPING.payee)
-      const holdTypeIdx = detectColumnIndex(headers, FIELD_MAPPING.holdType)
-
-      const previewBills: PreviewBill[] = dataRows.map((row, idx) => {
-        const billNo = billNoIdx >= 0 ? row[billNoIdx]?.trim() : ''
-        const amount = amountIdx >= 0 ? parseAmount(row[amountIdx]) : 0
-        const issueDate = issueDateIdx >= 0 ? parseDate(row[issueDateIdx]) : ''
-        const dueDate = dueDateIdx >= 0 ? parseDate(row[dueDateIdx]) : ''
-        const daysToDue = dueDate ? calculateDaysToDue(dueDate) : 999
-        const acceptorName = acceptorIdx >= 0 ? row[acceptorIdx]?.trim() : ''
-        const drawer = drawerIdx >= 0 ? row[drawerIdx]?.trim() : ''
-        const payee = payeeIdx >= 0 ? row[payeeIdx]?.trim() : ''
-        const holdTypeRaw = holdTypeIdx >= 0 ? row[holdTypeIdx]?.trim() : ''
-        const holdType = /背书|转让|endorsed|已背书/i.test(holdTypeRaw) ? 'endorsed' : 'self_held'
-
-        const errors: string[] = []
-        if (!billNo) errors.push('票据号不能为空')
-        if (amount <= 0) errors.push('金额无效')
-        if (!dueDate) errors.push('到期日期无效')
-
-        const bill: PreviewBill = {
-          billNo,
-          amount,
-          issueDate,
-          dueDate,
-          daysToDue,
-          acceptorName,
-          drawer,
-          payee,
-          holdType,
-          riskLevel: detectRiskLevel(daysToDue, amount),
-          _rowNumber: idx + 2,
-          _rowError: errors.length > 0 ? errors.join('；') : undefined,
-        }
-        return bill
-      })
-
-      setPreviewData(previewBills)
-      setShowPreview(true)
+      if (isCSV) {
+        const text = await file.text()
+        const rows = parseCSV(text)
+        parseRows(rows)
+      } else {
+        const buffer = await file.arrayBuffer()
+        const workbook = XLSX.read(buffer, { type: 'array' })
+        const sheetName = workbook.SheetNames[0]
+        const sheet = workbook.Sheets[sheetName]
+        const rows: string[][] = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' })
+        parseRows(rows as string[][])
+      }
     } catch (e) {
       console.error('解析文件失败', e)
       alert('文件解析失败，请检查文件格式')
     } finally {
       setIsParsing(false)
     }
-  }, [])
+  }, [existingBillNos])
+
+  const downloadErrorList = () => {
+    const errorRows = previewData.filter((b) => b._rowError)
+    if (errorRows.length === 0) {
+      alert('没有校验失败的行')
+      return
+    }
+    const headers = ['行号', '票据号', '金额', '到期日期', '承兑人', '错误原因']
+    const data = errorRows.map((b) => [
+      String(b._rowNumber ?? ''),
+      b.billNo ?? '',
+      String(b.amount ?? ''),
+      b.dueDate ?? '',
+      b.acceptorName ?? '',
+      b._rowError ?? '',
+    ])
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...data])
+    const wb = XLSX.utils.book_new()
+    XLSX.utils.book_append_sheet(wb, ws, '错误清单')
+    const baseName = fileName.replace(/\.(csv|xlsx|xls)$/i, '')
+    XLSX.writeFile(wb, `${baseName}_错误清单.xlsx`)
+  }
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -234,17 +294,22 @@ export const BatchImport: React.FC = () => {
     const files = e.dataTransfer.files
     if (files.length > 0) {
       const file = files[0]
-      if (file.name.endsWith('.csv') || file.name.endsWith('.CSV')) {
+      const lowerName = file.name.toLowerCase()
+      if (
+        lowerName.endsWith('.csv') ||
+        lowerName.endsWith('.xlsx') ||
+        lowerName.endsWith('.xls')
+      ) {
         parseFile(file)
       } else {
-        alert('目前仅支持 CSV 格式文件，请上传 .csv 文件')
+        alert('仅支持 CSV、XLSX、XLS 格式文件')
       }
     }
   }
 
   const handleConfirmImport = () => {
     const validBills = previewData
-      .filter((b) => !b._rowError)
+      .filter((b) => !b._rowError && b._importStatus !== 'exists')
       .map((b) => ({
         id: '',
         billNo: b.billNo!,
@@ -288,6 +353,24 @@ export const BatchImport: React.FC = () => {
       render: (v) => v || <span className="text-[var(--color-text-muted)]">空</span> },
     { key: 'holdType', title: '持有类型', dataIndex: 'holdType',
       render: (v) => v === 'endorsed' ? <Tag variant="info">已背书</Tag> : <Tag variant="primary">自持</Tag> },
+    {
+      key: 'importStatus',
+      title: '入库状态',
+      width: 100,
+      align: 'center',
+      render: (_, record) => {
+        if (record._rowError) {
+          return <Tag variant="default"><Minus size={12} className="mr-1" />无法入库</Tag>
+        }
+        if (record._importStatus === 'exists') {
+          return <Tag variant="warning"><RefreshCw size={12} className="mr-1" />已存在</Tag>
+        }
+        if (record._importStatus === 'new') {
+          return <Tag variant="success"><CheckCircle2 size={12} className="mr-1" />待入库</Tag>
+        }
+        return null
+      },
+    },
     { key: 'error', title: '校验结果',
       render: (_, record) => record._rowError ? (
         <Tag variant="danger"><AlertCircle size={12} className="mr-1" />{record._rowError}</Tag>
@@ -317,6 +400,8 @@ export const BatchImport: React.FC = () => {
 
   const errorCount = previewData.filter((b) => b._rowError).length
   const successCount = previewData.length - errorCount
+  const newCount = previewData.filter((b) => !b._rowError && b._importStatus === 'new').length
+  const existsCount = previewData.filter((b) => !b._rowError && b._importStatus === 'exists').length
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -344,7 +429,7 @@ export const BatchImport: React.FC = () => {
           <input
             ref={fileInputRef}
             type="file"
-            accept=".csv,.CSV"
+            accept=".csv,.CSV,.xlsx,.XLSX,.xls,.XLS"
             className="hidden"
             onChange={handleFileSelect}
           />
@@ -353,7 +438,7 @@ export const BatchImport: React.FC = () => {
             {isDragging ? '松开鼠标上传文件' : '点击或拖拽文件到此处上传'}
           </div>
           <div className="text-xs text-[var(--color-text-muted)] mb-3">
-            支持 CSV 格式文件，单文件最多支持 5000 条票据
+            支持 CSV、XLSX、XLS 格式文件，单文件最多支持 5000 条票据
           </div>
           <Button variant="primary" icon={<FileSpreadsheet size={14} />} disabled={isParsing}>
             {isParsing ? '解析中...' : '选择文件'}
@@ -395,9 +480,22 @@ export const BatchImport: React.FC = () => {
           <div className="flex items-center justify-between w-full">
             <div className="flex gap-4 text-sm">
               <span>共 <b>{previewData.length}</b> 条</span>
-              <span className="text-[var(--color-success)]">校验通过 <b>{successCount}</b> 条</span>
+              <span className="text-[var(--color-success)]">待入库 <b>{newCount}</b> 条</span>
+              {existsCount > 0 && (
+                <span className="text-[var(--color-warning)]">已存在 <b>{existsCount}</b> 条（跳过）</span>
+              )}
               {errorCount > 0 && (
                 <span className="text-[var(--color-danger)]">校验失败 <b>{errorCount}</b> 条</span>
+              )}
+              {errorCount > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  icon={<Download size={14} />}
+                  onClick={downloadErrorList}
+                >
+                  下载错误清单
+                </Button>
               )}
             </div>
             <div className="flex gap-2">
@@ -405,8 +503,8 @@ export const BatchImport: React.FC = () => {
               <Button variant="danger" icon={<Trash2 size={14} />} onClick={() => { setPreviewData([]); setShowPreview(false) }}>
                 清空
               </Button>
-              <Button variant="primary" onClick={handleConfirmImport} disabled={successCount === 0}>
-                确认导入 ({successCount})
+              <Button variant="primary" onClick={handleConfirmImport} disabled={newCount === 0}>
+                确认导入 ({newCount})
               </Button>
             </div>
           </div>

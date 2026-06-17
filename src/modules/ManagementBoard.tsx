@@ -21,6 +21,11 @@ export const ManagementBoard: React.FC = () => {
   const [showInternalAudit, setShowInternalAudit] = useState(false)
   const [selectedAuditBill, setSelectedAuditBill] = useState<Bill | null>(null)
 
+  const [auditKeyword, setAuditKeyword] = useState('')
+  const [auditType, setAuditType] = useState<string>('all')
+  const [auditDateFrom, setAuditDateFrom] = useState('')
+  const [auditDateTo, setAuditDateTo] = useState('')
+
   const stats = useMemo(() => {
     const total = bills.length
     const totalAmount = bills.reduce((s, b) => s + b.amount, 0)
@@ -117,11 +122,60 @@ export const ManagementBoard: React.FC = () => {
     return riskReports.filter((r) => r.period === period)
   }, [riskReports, period])
 
-  const auditBills = useMemo(() => {
-    return bills.filter((b) => b.status === 'paid' || b.status === 'dishonored' || b.status === 'recourse')
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-      .slice(0, 50)
-  }, [bills])
+  const disposalTypeOptions: { value: string; label: string }[] = [
+    { value: 'all', label: '全部操作类型' },
+    { value: 'import', label: '导入票据' },
+    { value: 'payment_prompt', label: '提示付款' },
+    { value: 'payment_feedback', label: '付款反馈' },
+    { value: 'dishonor_record', label: '拒付登记' },
+    { value: 'recourse_action', label: '追索更新' },
+    { value: 'assignment', label: '任务分配' },
+    { value: 'review', label: '风险复核' },
+    { value: 'status_change', label: '状态变更' },
+    { value: 'note', label: '备注记录' },
+  ]
+
+  const filteredAuditRecords = useMemo(() => {
+    let result = [...disposalRecords]
+
+    if (auditKeyword.trim()) {
+      const kw = auditKeyword.trim().toUpperCase()
+      result = result.filter(
+        (r) =>
+          r.billNo.toUpperCase().includes(kw) ||
+          r.action.toUpperCase().includes(kw) ||
+          (r.detail ?? '').toUpperCase().includes(kw)
+      )
+    }
+
+    if (auditType !== 'all') {
+      result = result.filter((r) => r.type === auditType)
+    }
+
+    if (auditDateFrom) {
+      result = result.filter((r) => r.createdAt >= auditDateFrom)
+    }
+    if (auditDateTo) {
+      result = result.filter((r) => r.createdAt <= auditDateTo + ' 23:59:59')
+    }
+
+    return result.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+  }, [disposalRecords, auditKeyword, auditType, auditDateFrom, auditDateTo])
+
+  const getDisposalTypeLabel = (type: string): { label: string; color: 'primary' | 'success' | 'warning' | 'danger' | 'info' | 'default' } => {
+    const map: Record<string, { label: string; color: any }> = {
+      import: { label: '导入', color: 'info' },
+      payment_prompt: { label: '提示付款', color: 'primary' },
+      payment_feedback: { label: '付款反馈', color: 'success' },
+      dishonor_record: { label: '拒付登记', color: 'danger' },
+      recourse_action: { label: '追索更新', color: 'warning' },
+      assignment: { label: '任务分配', color: 'primary' },
+      review: { label: '风险复核', color: 'warning' },
+      status_change: { label: '状态变更', color: 'default' },
+      note: { label: '备注', color: 'default' },
+    }
+    return map[type] || { label: type, color: 'default' }
+  }
 
   const reportColumns: Column<RiskReport>[] = [
     { key: 'reportDate', title: '报告日期', dataIndex: 'reportDate',
@@ -157,40 +211,28 @@ export const ManagementBoard: React.FC = () => {
     },
   ]
 
-  const auditColumns: Column<Bill>[] = [
-    { key: 'billNo', title: '票据号码', dataIndex: 'billNo', render: (v) => <span className="font-mono text-xs">{v}</span> },
-    { key: 'amount', title: '票面金额', dataIndex: 'amount', align: 'right', render: (v) => formatAmountFull(v) },
-    { key: 'acceptorName', title: '承兑人', dataIndex: 'acceptorName' },
-    { key: 'managerName', title: '客户经理', dataIndex: 'managerName' },
+  const auditColumns: Column<typeof filteredAuditRecords[0]>[] = [
+    { key: 'createdAt', title: '操作时间', dataIndex: 'createdAt', width: 160 },
     {
-      key: 'status',
-      title: '最终状态',
-      dataIndex: 'status',
-      render: (v) => {
-        const map: Record<string, { color: string; label: string }> = {
-          paid: { color: 'success', label: '已结清' },
-          dishonored: { color: 'danger', label: '已拒付' },
-          recourse: { color: 'warning', label: '追索中' },
-          closed: { color: 'default', label: '已关闭' },
-        }
-        const item = map[v] || { color: 'default', label: v }
-        return <Tag variant={item.color as any}>{item.label}</Tag>
+      key: 'type',
+      title: '操作类型',
+      width: 110,
+      align: 'center',
+      render: (_, record) => {
+        const item = getDisposalTypeLabel(record.type)
+        return <Tag variant={item.color}>{item.label}</Tag>
       },
     },
-    { key: 'updatedAt', title: '最后处置时间', dataIndex: 'updatedAt' },
+    { key: 'billNo', title: '票据号码', dataIndex: 'billNo', width: 160, render: (v) => <span className="font-mono text-xs">{v}</span> },
+    { key: 'action', title: '操作内容', dataIndex: 'action' },
     {
-      key: 'action',
-      title: '操作',
-      width: 120,
-      render: (_, record) => (
-        <Button variant="ghost" size="sm" icon={<Eye size={14} />} onClick={() => {
-          setSelectedAuditBill(record)
-          setShowInternalAudit(true)
-        }}>
-          抽查详情
-        </Button>
-      ),
+      key: 'detail',
+      title: '备注/详情',
+      dataIndex: 'detail',
+      render: (v) =>
+        v ? <span className="text-[var(--color-text-secondary)]">{v}</span> : <span className="text-[var(--color-text-muted)]">-</span>,
     },
+    { key: 'operatorName', title: '操作人', dataIndex: 'operatorName', width: 90 },
   ]
 
   return (
@@ -385,7 +427,7 @@ export const ManagementBoard: React.FC = () => {
           }
         >
           <div className="max-h-64 overflow-auto">
-            <Table columns={auditColumns} data={auditBills.slice(0, 8)} />
+            <Table columns={auditColumns} data={filteredAuditRecords.slice(0, 8)} />
           </div>
         </Card>
       </div>
@@ -458,22 +500,75 @@ export const ManagementBoard: React.FC = () => {
         title={
           <div className="flex items-center gap-2">
             <ShieldCheck size={18} className="text-[var(--color-primary)]" />
-            内控抽查 - 处置轨迹完整留痕
+            内控抽查 - 操作记录审计留痕
           </div>
         }
-        width={900}
+        width={1100}
         onClose={() => setShowInternalAudit(false)}
         footer={
           <div className="flex justify-between w-full">
             <div className="text-xs text-[var(--color-text-muted)] self-center">
-              所有操作记录永久保存，不可篡改，符合审计要求
+              共 {filteredAuditRecords.length} 条操作记录，所有记录永久保存、不可篡改，符合审计要求
             </div>
             <Button variant="secondary" onClick={() => setShowInternalAudit(false)}>关闭</Button>
           </div>
         }
       >
-        <div className="max-h-[60vh] overflow-auto">
-          <Table columns={auditColumns} data={auditBills} />
+        <div className="mb-4 p-4 bg-[var(--color-bg-tertiary)] rounded grid grid-cols-5 gap-3">
+          <div>
+            <label className="block text-xs text-[var(--color-text-muted)] mb-1">关键词（票据号/操作内容）</label>
+            <input
+              type="text"
+              placeholder="搜索票据号或操作描述..."
+              className="w-full px-3 py-2 bg-white border border-[var(--color-border)] rounded text-sm outline-none focus:border-[var(--color-primary)] focus:ring-1 focus:ring-[var(--color-primary-border)]"
+              value={auditKeyword}
+              onChange={(e) => setAuditKeyword(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-[var(--color-text-muted)] mb-1">操作类型</label>
+            <Select
+              value={auditType}
+              onChange={(e) => setAuditType(e.target.value)}
+              className="w-full"
+              options={disposalTypeOptions}
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-[var(--color-text-muted)] mb-1">开始日期</label>
+            <input
+              type="date"
+              className="w-full px-3 py-2 bg-white border border-[var(--color-border)] rounded text-sm outline-none focus:border-[var(--color-primary)] focus:ring-1 focus:ring-[var(--color-primary-border)]"
+              value={auditDateFrom}
+              onChange={(e) => setAuditDateFrom(e.target.value)}
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-[var(--color-text-muted)] mb-1">结束日期</label>
+            <input
+              type="date"
+              className="w-full px-3 py-2 bg-white border border-[var(--color-border)] rounded text-sm outline-none focus:border-[var(--color-primary)] focus:ring-1 focus:ring-[var(--color-primary-border)]"
+              value={auditDateTo}
+              onChange={(e) => setAuditDateTo(e.target.value)}
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                setAuditKeyword('')
+                setAuditType('all')
+                setAuditDateFrom('')
+                setAuditDateTo('')
+              }}
+            >
+              重置
+            </Button>
+          </div>
+        </div>
+        <div className="max-h-[50vh] overflow-auto">
+          <Table columns={auditColumns} data={filteredAuditRecords} />
         </div>
       </Modal>
     </div>

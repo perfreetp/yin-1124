@@ -248,6 +248,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       const priority = options.priority ?? 3
       const newAssignments: Assignment[] = []
       const updatedBills = new Map<string, Bill>()
+      const recordsToAdd: DisposalRecord[] = []
 
       billIds.forEach((billId, idx) => {
         const bill = get().bills.find((b) => b.id === billId)
@@ -264,24 +265,25 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           note: options.note,
         })
         updatedBills.set(billId, { ...bill, managerId, managerName, updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss') })
+        recordsToAdd.push({
+          id: `rec${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 4)}`,
+          billId,
+          billNo: bill.billNo,
+          type: 'assignment',
+          action: `分配给客户经理：${managerName}（优先级 ${priority} 级，批量）`,
+          detail: options.note,
+          operatorId: 'm001',
+          operatorName: '当前用户',
+          operatorRole: 'operation',
+          createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+          ipAddress: '192.168.1.100',
+        })
       })
-
-      if (billIds.length > 0) {
-        const firstBill = get().bills.find((b) => b.id === billIds[0])
-        if (firstBill) {
-          get().addDisposalRecord({
-            billId: billIds[0],
-            billNo: firstBill.billNo,
-            type: 'assignment',
-            action: `批量分配 ${billIds.length} 张票据给：${managerName}（优先级 ${priority} 级）`,
-            detail: options.note,
-          })
-        }
-      }
 
       set((state) => ({
         bills: state.bills.map((b) => updatedBills.get(b.id) || b),
         assignments: [...newAssignments, ...state.assignments],
+        disposalRecords: [...recordsToAdd, ...state.disposalRecords],
       }))
     },
 
@@ -331,7 +333,10 @@ export const useWorkbenchStore = create<WorkbenchState>()(
     batchAddPaymentPrompt: (billIds, promptMethod) => {
       const newPrompts: PaymentPrompt[] = []
       const updatedBills = new Map<string, Bill>()
+      const recordsToAdd: DisposalRecord[] = []
       let success = 0
+
+      const methodLabel = promptMethod === 'bank' ? '银行渠道' : promptMethod === 'system' ? '系统自动' : '人工操作'
 
       billIds.forEach((billId, idx) => {
         const bill = get().bills.find((b) => b.id === billId)
@@ -344,24 +349,26 @@ export const useWorkbenchStore = create<WorkbenchState>()(
           promptMethod,
         })
         updatedBills.set(billId, { ...bill, status: 'pending_payment', updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss') })
+        recordsToAdd.push({
+          id: `rec${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 4)}`,
+          billId,
+          billNo: bill.billNo,
+          type: 'payment_prompt',
+          action: `发起提示付款，方式：${methodLabel}（批量）`,
+          detail: `来自批量提示付款操作，共处理 ${billIds.length} 张`,
+          operatorId: 'm001',
+          operatorName: '当前用户',
+          operatorRole: 'operation',
+          createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+          ipAddress: '192.168.1.100',
+        })
         success++
       })
-
-      if (success > 0) {
-        const firstBill = get().bills.find((b) => b.id === billIds.find((id) => updatedBills.has(id))!)
-        if (firstBill) {
-          get().addDisposalRecord({
-            billId: firstBill.id,
-            billNo: firstBill.billNo,
-            type: 'payment_prompt',
-            action: `批量发起提示付款 ${success} 张，方式：${promptMethod === 'bank' ? '银行渠道' : promptMethod === 'system' ? '系统自动' : '人工操作'}`,
-          })
-        }
-      }
 
       set((state) => ({
         paymentPrompts: [...newPrompts, ...state.paymentPrompts],
         bills: state.bills.map((b) => updatedBills.get(b.id) || b),
+        disposalRecords: [...recordsToAdd, ...state.disposalRecords],
       }))
 
       return { success }
