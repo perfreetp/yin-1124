@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react'
+import React, { useState, useRef, useCallback } from 'react'
 import { Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download, Trash2, Eye } from 'lucide-react'
 import { Card } from '@/components/Card'
 import { Button } from '@/components/Button'
@@ -11,6 +11,118 @@ import dayjs from 'dayjs'
 
 interface PreviewBill extends Partial<Bill> {
   _rowError?: string
+  _rowNumber?: number
+}
+
+interface FieldMapping {
+  billNo: string[]
+  amount: string[]
+  issueDate: string[]
+  dueDate: string[]
+  acceptorName: string[]
+  drawer: string[]
+  payee: string[]
+  holdType: string[]
+}
+
+const FIELD_MAPPING: FieldMapping = {
+  billNo: ['票据号', '票据号码', '票号', 'billNo', 'bill_no', '电子票号'],
+  amount: ['票面金额', '金额', '票载金额', 'amount', 'bill_amount', '票据金额'],
+  issueDate: ['出票日期', '出票日', 'issueDate', 'issue_date', '开票日期'],
+  dueDate: ['到期日期', '到期日', 'dueDate', 'due_date', '票据到期日'],
+  acceptorName: ['承兑人', '承兑人名称', 'acceptor', 'acceptor_name', '付款人'],
+  drawer: ['出票人', '出票人名称', 'drawer', 'drawer_name'],
+  payee: ['收款人', '收款人名称', 'payee', 'payee_name'],
+  holdType: ['持有类型', '持有方式', 'holdType', '类型', '票据类型'],
+}
+
+function parseCSV(text: string): string[][] {
+  const lines: string[][] = []
+  let currentLine: string[] = []
+  let currentField = ''
+  let inQuotes = false
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i]
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          currentField += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        currentField += char
+      }
+    } else {
+      if (char === '"') {
+        inQuotes = true
+      } else if (char === ',') {
+        currentLine.push(currentField.trim())
+        currentField = ''
+      } else if (char === '\n' || char === '\r') {
+        if (char === '\r' && text[i + 1] === '\n') i++
+        currentLine.push(currentField.trim())
+        if (currentLine.length > 0 && currentLine.some((f) => f !== '')) {
+          lines.push(currentLine)
+        }
+        currentLine = []
+        currentField = ''
+      } else {
+        currentField += char
+      }
+    }
+  }
+
+  if (currentField !== '' || currentLine.length > 0) {
+    currentLine.push(currentField.trim())
+    if (currentLine.length > 0 && currentLine.some((f) => f !== '')) {
+      lines.push(currentLine)
+    }
+  }
+
+  return lines
+}
+
+function detectColumnIndex(headers: string[], candidates: string[]): number {
+  for (const candidate of candidates) {
+    const idx = headers.findIndex((h) => h.trim().toLowerCase() === candidate.toLowerCase())
+    if (idx >= 0) return idx
+  }
+  for (const candidate of candidates) {
+    const idx = headers.findIndex((h) => h.trim().toLowerCase().includes(candidate.toLowerCase()))
+    if (idx >= 0) return idx
+  }
+  return -1
+}
+
+function parseAmount(value: string): number {
+  if (!value) return 0
+  const cleaned = value.replace(/[,，]/g, '').replace(/[元￥¥]/g, '').trim()
+  const num = parseFloat(cleaned)
+  return isNaN(num) ? 0 : num
+}
+
+function parseDate(value: string): string {
+  if (!value) return ''
+  const cleaned = value.replace(/[年月日]/g, '-').replace(/\./g, '-').trim().replace(/-+$/, '')
+  const d = dayjs(cleaned)
+  return d.isValid() ? d.format('YYYY-MM-DD') : ''
+}
+
+function calculateDaysToDue(dueDate: string): number {
+  if (!dueDate) return 999
+  const d = dayjs(dueDate)
+  return d.diff(dayjs(), 'day')
+}
+
+function detectRiskLevel(daysToDue: number, amount: number): Bill['riskLevel'] {
+  if (daysToDue <= 3) return 'high'
+  if (daysToDue <= 7) return 'medium'
+  if (amount >= 10000000) return 'medium'
+  return 'low'
 }
 
 export const BatchImport: React.FC = () => {
@@ -19,37 +131,115 @@ export const BatchImport: React.FC = () => {
   const [fileName, setFileName] = useState('')
   const [showPreview, setShowPreview] = useState(false)
   const [selectedLog, setSelectedLog] = useState<ImportLog | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [isParsing, setIsParsing] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const parseFile = useCallback(async (file: File) => {
+    setFileName(file.name)
+    setIsParsing(true)
+
+    try {
+      const text = await file.text()
+      const rows = parseCSV(text)
+
+      if (rows.length < 2) {
+        alert('CSV 文件内容不足，至少需要表头和一行数据')
+        setIsParsing(false)
+        return
+      }
+
+      const headers = rows[0].map((h) => h.trim())
+      const dataRows = rows.slice(1)
+
+      const billNoIdx = detectColumnIndex(headers, FIELD_MAPPING.billNo)
+      const amountIdx = detectColumnIndex(headers, FIELD_MAPPING.amount)
+      const issueDateIdx = detectColumnIndex(headers, FIELD_MAPPING.issueDate)
+      const dueDateIdx = detectColumnIndex(headers, FIELD_MAPPING.dueDate)
+      const acceptorIdx = detectColumnIndex(headers, FIELD_MAPPING.acceptorName)
+      const drawerIdx = detectColumnIndex(headers, FIELD_MAPPING.drawer)
+      const payeeIdx = detectColumnIndex(headers, FIELD_MAPPING.payee)
+      const holdTypeIdx = detectColumnIndex(headers, FIELD_MAPPING.holdType)
+
+      const previewBills: PreviewBill[] = dataRows.map((row, idx) => {
+        const billNo = billNoIdx >= 0 ? row[billNoIdx]?.trim() : ''
+        const amount = amountIdx >= 0 ? parseAmount(row[amountIdx]) : 0
+        const issueDate = issueDateIdx >= 0 ? parseDate(row[issueDateIdx]) : ''
+        const dueDate = dueDateIdx >= 0 ? parseDate(row[dueDateIdx]) : ''
+        const daysToDue = dueDate ? calculateDaysToDue(dueDate) : 999
+        const acceptorName = acceptorIdx >= 0 ? row[acceptorIdx]?.trim() : ''
+        const drawer = drawerIdx >= 0 ? row[drawerIdx]?.trim() : ''
+        const payee = payeeIdx >= 0 ? row[payeeIdx]?.trim() : ''
+        const holdTypeRaw = holdTypeIdx >= 0 ? row[holdTypeIdx]?.trim() : ''
+        const holdType = /背书|转让|endorsed|已背书/i.test(holdTypeRaw) ? 'endorsed' : 'self_held'
+
+        const errors: string[] = []
+        if (!billNo) errors.push('票据号不能为空')
+        if (amount <= 0) errors.push('金额无效')
+        if (!dueDate) errors.push('到期日期无效')
+
+        const bill: PreviewBill = {
+          billNo,
+          amount,
+          issueDate,
+          dueDate,
+          daysToDue,
+          acceptorName,
+          drawer,
+          payee,
+          holdType,
+          riskLevel: detectRiskLevel(daysToDue, amount),
+          _rowNumber: idx + 2,
+          _rowError: errors.length > 0 ? errors.join('；') : undefined,
+        }
+        return bill
+      })
+
+      setPreviewData(previewBills)
+      setShowPreview(true)
+    } catch (e) {
+      console.error('解析文件失败', e)
+      alert('文件解析失败，请检查文件格式')
+    } finally {
+      setIsParsing(false)
+    }
+  }, [])
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    setFileName(file.name)
-    const mockData: PreviewBill[] = []
-    for (let i = 1; i <= 35; i++) {
-      const hasError = i === 8 || i === 22
-      const dueDate = dayjs().add(Math.floor(Math.random() * 180), 'day')
-      const issueDate = dueDate.subtract(180, 'day')
-      mockData.push({
-        billNo: `EC${dayjs().format('YYYYMMDD')}${String(10000 + i).padStart(8, '0')}`,
-        amount: hasError ? -1 : (Math.floor(Math.random() * 900) + 100) * 10000,
-        issueDate: issueDate.format('YYYY-MM-DD'),
-        dueDate: hasError ? '无效日期' : dueDate.format('YYYY-MM-DD'),
-        daysToDue: hasError ? 0 : dueDate.diff(dayjs(), 'day'),
-        acceptorName: [
-          '中航国际控股有限公司',
-          '中铁建设集团有限公司',
-          '恒大地产集团有限公司',
-          '中国建筑第八工程局',
-        ][Math.floor(Math.random() * 4)],
-        drawer: `出票企业${i}有限公司`,
-        payee: `收款企业${i}有限公司`,
-        holdType: Math.random() > 0.4 ? 'self_held' : 'endorsed',
-        _rowError: hasError ? (i === 8 ? '金额不能为负数' : '到期日期格式错误') : undefined,
-      })
+    parseFile(file)
+    if (fileInputRef.current) {
+      fileInputRef.current.value = ''
     }
-    setPreviewData(mockData)
-    setShowPreview(true)
+  }
+
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(true)
+  }
+
+  const handleDragLeave = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setIsDragging(false)
+
+    const files = e.dataTransfer.files
+    if (files.length > 0) {
+      const file = files[0]
+      if (file.name.endsWith('.csv') || file.name.endsWith('.CSV')) {
+        parseFile(file)
+      } else {
+        alert('目前仅支持 CSV 格式文件，请上传 .csv 文件')
+      }
+    }
   }
 
   const handleConfirmImport = () => {
@@ -59,22 +249,23 @@ export const BatchImport: React.FC = () => {
         id: '',
         billNo: b.billNo!,
         amount: b.amount!,
-        issueDate: b.issueDate!,
+        issueDate: b.issueDate || dayjs().subtract(180, 'day').format('YYYY-MM-DD'),
         dueDate: b.dueDate!,
-        daysToDue: b.daysToDue!,
-        acceptorId: 'acc001',
-        acceptorName: b.acceptorName!,
-        drawer: b.drawer!,
-        payee: b.payee!,
+        daysToDue: b.daysToDue ?? 999,
+        acceptorId: 'acc_new',
+        acceptorName: b.acceptorName || '未知承兑人',
+        drawer: b.drawer || '-',
+        payee: b.payee || '-',
         status: b.holdType === 'endorsed' ? 'endorsed' : 'holding',
-        holdType: b.holdType!,
-        requiresReview: b.amount! >= 5000000,
-        reviewed: b.amount! < 5000000,
-        riskLevel: b.daysToDue! <= 7 ? 'high' : b.daysToDue! <= 15 ? 'medium' : 'low',
+        holdType: b.holdType || 'self_held',
+        requiresReview: (b.amount || 0) >= 5000000,
+        reviewed: (b.amount || 0) < 5000000,
+        riskLevel: b.riskLevel || 'low',
         tags: [],
         createdAt: '',
         updatedAt: '',
       }))
+
     importBills(validBills as Bill[], fileName, '当前用户')
     setShowPreview(false)
     setPreviewData([])
@@ -82,16 +273,21 @@ export const BatchImport: React.FC = () => {
   }
 
   const previewColumns: Column<PreviewBill>[] = [
-    { key: 'index', title: '行号', width: 60, render: (_, __, idx) => idx + 1 },
-    { key: 'billNo', title: '票据号码', dataIndex: 'billNo' },
+    { key: 'rowNo', title: '行号', width: 60, render: (_, record) => record._rowNumber },
+    { key: 'billNo', title: '票据号码', dataIndex: 'billNo',
+      render: (v) => v ? <span className="font-mono text-xs">{v}</span> : <span className="text-[var(--color-danger)]">缺失</span> },
     { key: 'amount', title: '票面金额(元)', dataIndex: 'amount', align: 'right',
-      render: (v) => v > 0 ? formatAmountFull(v) : <span className="text-[var(--color-danger)]">{v}</span> },
-    { key: 'issueDate', title: '出票日期', dataIndex: 'issueDate' },
+      render: (v) => v > 0 ? formatAmountFull(v) : <span className="text-[var(--color-danger)]">无效</span> },
+    { key: 'issueDate', title: '出票日期', dataIndex: 'issueDate',
+      render: (v) => v || <span className="text-[var(--color-text-muted)]">空</span> },
     { key: 'dueDate', title: '到期日期', dataIndex: 'dueDate',
-      render: (v) => v === '无效日期' ? <span className="text-[var(--color-danger)]">{v}</span> : v },
-    { key: 'acceptorName', title: '承兑人', dataIndex: 'acceptorName' },
+      render: (v) => v ? v : <span className="text-[var(--color-danger)]">无效</span> },
+    { key: 'acceptorName', title: '承兑人', dataIndex: 'acceptorName',
+      render: (v) => v || <span className="text-[var(--color-text-muted)]">空</span> },
+    { key: 'drawer', title: '出票人', dataIndex: 'drawer',
+      render: (v) => v || <span className="text-[var(--color-text-muted)]">空</span> },
     { key: 'holdType', title: '持有类型', dataIndex: 'holdType',
-      render: (v) => v === 'self_held' ? <Tag variant="primary">自持</Tag> : <Tag variant="info">已背书</Tag> },
+      render: (v) => v === 'endorsed' ? <Tag variant="info">已背书</Tag> : <Tag variant="primary">自持</Tag> },
     { key: 'error', title: '校验结果',
       render: (_, record) => record._rowError ? (
         <Tag variant="danger"><AlertCircle size={12} className="mr-1" />{record._rowError}</Tag>
@@ -129,46 +325,53 @@ export const BatchImport: React.FC = () => {
         extra={
           <div className="flex gap-2">
             <Button variant="outline" size="sm" icon={<Download size={14} />}>
-              下载模板
+              下载CSV模板
             </Button>
           </div>
         }
       >
         <div
-          className="border-2 border-dashed border-[var(--color-border-dark)] rounded-md p-10 text-center hover:border-[var(--color-primary)] hover:bg-[var(--color-primary-bg)] transition-colors cursor-pointer"
+          className={`border-2 border-dashed rounded-md p-10 text-center transition-all cursor-pointer ${
+            isDragging
+              ? 'border-[var(--color-primary)] bg-[var(--color-primary-bg)]'
+              : 'border-[var(--color-border-dark)] hover:border-[var(--color-primary)] hover:bg-[var(--color-primary-bg)]'
+          }`}
           onClick={() => fileInputRef.current?.click()}
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
         >
           <input
             ref={fileInputRef}
             type="file"
-            accept=".xlsx,.xls,.csv"
+            accept=".csv,.CSV"
             className="hidden"
             onChange={handleFileSelect}
           />
-          <Upload size={40} className="mx-auto text-[var(--color-primary)] mb-3" />
+          <Upload size={40} className={`mx-auto mb-3 ${isDragging ? 'text-[var(--color-primary)]' : 'text-[var(--color-primary)]'}`} />
           <div className="text-[var(--color-text-primary)] font-medium mb-1">
-            点击或拖拽文件到此处上传
+            {isDragging ? '松开鼠标上传文件' : '点击或拖拽文件到此处上传'}
           </div>
           <div className="text-xs text-[var(--color-text-muted)] mb-3">
-            支持 Excel (.xlsx, .xls) 和 CSV 格式，单文件最多支持 5000 条票据
+            支持 CSV 格式文件，单文件最多支持 5000 条票据
           </div>
-          <Button variant="primary" icon={<FileSpreadsheet size={14} />}>
-            选择文件
+          <Button variant="primary" icon={<FileSpreadsheet size={14} />} disabled={isParsing}>
+            {isParsing ? '解析中...' : '选择文件'}
           </Button>
         </div>
 
         <div className="mt-4 grid grid-cols-4 gap-3 text-center">
           <div className="p-3 rounded bg-[var(--color-bg-tertiary)]">
             <div className="text-xs text-[var(--color-text-muted)] mb-1">必填字段</div>
-            <div className="text-sm text-[var(--color-text-primary)] font-medium">票据号、金额、出票日、到期日、承兑人</div>
+            <div className="text-sm text-[var(--color-text-primary)] font-medium">票据号、金额、到期日、承兑人</div>
           </div>
           <div className="p-3 rounded bg-[var(--color-bg-tertiary)]">
             <div className="text-xs text-[var(--color-text-muted)] mb-1">选填字段</div>
-            <div className="text-sm text-[var(--color-text-primary)] font-medium">出票人、收款人、客户经理、背书信息</div>
+            <div className="text-sm text-[var(--color-text-primary)] font-medium">出票人、收款人、持有类型</div>
           </div>
           <div className="p-3 rounded bg-[var(--color-bg-tertiary)]">
             <div className="text-xs text-[var(--color-text-muted)] mb-1">数据校验</div>
-            <div className="text-sm text-[var(--color-text-primary)] font-medium">格式校验、重复校验、逻辑校验</div>
+            <div className="text-sm text-[var(--color-text-primary)] font-medium">格式校验、金额校验、日期校验</div>
           </div>
           <div className="p-3 rounded bg-[var(--color-bg-tertiary)]">
             <div className="text-xs text-[var(--color-text-muted)] mb-1">操作留痕</div>
@@ -212,6 +415,16 @@ export const BatchImport: React.FC = () => {
         <div className="max-h-[60vh] overflow-auto">
           <Table columns={previewColumns} data={previewData} />
         </div>
+        <div className="mt-3 p-3 bg-[var(--color-bg-tertiary)] rounded text-xs text-[var(--color-text-muted)]">
+          <div className="font-medium mb-1">导入说明：</div>
+          <ul className="list-disc list-inside space-y-0.5">
+            <li>系统会自动识别列名，支持常见的中英文表头命名方式</li>
+            <li>金额支持带千分位、货币符号（¥、元）的格式</li>
+            <li>日期支持 2026-01-01、2026/01/01、2026年1月1日 等常见格式</li>
+            <li>持有类型包含"背书"或"转让"关键字会识别为已背书，否则视为自持</li>
+            <li>票面金额 ≥ 500 万元的票据自动标记为需风险复核</li>
+          </ul>
+        </div>
       </Modal>
 
       <Modal
@@ -227,13 +440,13 @@ export const BatchImport: React.FC = () => {
               <div><span className="text-[var(--color-text-muted)]">导入时间：</span>{selectedLog.importTime}</div>
               <div><span className="text-[var(--color-text-muted)]">操作人：</span>{selectedLog.operator}</div>
               <div><span className="text-[var(--color-text-muted)]">总条数：</span>{selectedLog.totalCount}</div>
-              <div><span className="text-[var(--color-text-muted)]">成功：</span><span className="text-[var(--color-success)]">{selectedLog.successCount}</span></div>
-              <div><span className="text-[var(--color-text-muted)]">失败：</span><span className="text-[var(--color-danger)]">{selectedLog.failedCount}</span></div>
+              <div><span className="text-[var(--color-text-muted)]">成功：</span><span className="text-[var(--color-success)] font-medium">{selectedLog.successCount}</span></div>
+              <div><span className="text-[var(--color-text-muted)]">失败：</span><span className="text-[var(--color-danger)] font-medium">{selectedLog.failedCount}</span></div>
             </div>
             {selectedLog.errors && selectedLog.errors.length > 0 && (
               <div>
                 <div className="text-sm font-medium text-[var(--color-text-primary)] mb-2">错误明细</div>
-                <div className="bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] rounded p-3 space-y-1">
+                <div className="bg-[var(--color-danger-bg)] border border-[var(--color-danger-border)] rounded p-3 space-y-1 max-h-60 overflow-auto">
                   {selectedLog.errors.map((err, idx) => (
                     <div key={idx} className="text-sm text-[var(--color-danger)]">
                       第 {err.row} 行：{err.message}

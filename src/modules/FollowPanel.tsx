@@ -32,13 +32,29 @@ export const FollowPanel: React.FC = () => {
       const highPriority = managerBills.filter((b) => b.riskLevel === 'critical' || b.riskLevel === 'high').length
       const dueWithin7 = managerBills.filter((b) => b.daysToDue <= 7 && b.daysToDue >= 0).length
       const managerAssignments = assignments.filter((a) => a.managerId === m.id && a.status !== 'completed')
+      const assignmentMap = new Map<string, typeof managerAssignments[0]>()
+      managerAssignments.forEach((a) => {
+        const existing = assignmentMap.get(a.billId)
+        if (!existing || new Date(a.assignedAt) > new Date(existing.assignedAt)) {
+          assignmentMap.set(a.billId, a)
+        }
+      })
+      const billListWithPriority = managerBills.map((b) => ({
+        ...b,
+        assignment: assignmentMap.get(b.id),
+      }))
       return {
         ...m,
         billCount: managerBills.length,
         highPriority,
         dueWithin7,
         pendingTasks: managerAssignments.length,
-        billList: managerBills.sort((a, b) => a.daysToDue - b.daysToDue),
+        billList: billListWithPriority.sort((a, b) => {
+          const pa = a.assignment?.priority ?? 3
+          const pb = b.assignment?.priority ?? 3
+          if (pa !== pb) return pb - pa
+          return a.daysToDue - b.daysToDue
+        }),
       }
     })
   }, [managers, bills, assignments])
@@ -49,7 +65,7 @@ export const FollowPanel: React.FC = () => {
     if (selectedBill && targetManager) {
       const mgr = managers.find((m) => m.id === targetManager)
       if (mgr) {
-        assignBillToManager(selectedBill.id, mgr.id, mgr.name)
+        assignBillToManager(selectedBill.id, mgr.id, mgr.name, { priority, note })
       }
     }
     setAssignModal(false)
@@ -304,6 +320,35 @@ export const FollowPanel: React.FC = () => {
                       },
                     },
                     { key: 'riskLevel', title: '风险', dataIndex: 'riskLevel', render: (v) => <RiskTag level={v} /> },
+                    {
+                      key: 'priority',
+                      title: '优先级',
+                      align: 'center',
+                      width: 100,
+                      render: (_, record: any) => {
+                        const p = record.assignment?.priority ?? 3
+                        const labels: Record<number, string> = { 1: '紧急', 2: '高', 3: '中', 4: '低', 5: '常规' }
+                        const colors: Record<number, 'danger' | 'warning' | 'primary' | 'info' | 'default'> = {
+                          1: 'danger',
+                          2: 'warning',
+                          3: 'primary',
+                          4: 'info',
+                          5: 'default',
+                        }
+                        return (
+                          <div className="flex flex-col items-center gap-0.5">
+                            <Tag variant={colors[p]}>
+                              {p}级 · {labels[p]}
+                            </Tag>
+                            {record.assignment?.note && (
+                              <span className="text-[10px] text-[var(--color-text-muted)] truncate max-w-24" title={record.assignment.note}>
+                                {record.assignment.note}
+                              </span>
+                            )}
+                          </div>
+                        )
+                      },
+                    },
                     {
                       key: 'review',
                       title: '复核',

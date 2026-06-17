@@ -26,8 +26,10 @@ export const DueQueue: React.FC = () => {
     selectAllBills,
     updateBillStatus,
     assignBillToManager,
+    batchAssignToManager,
     markAsReviewed,
     addPaymentPrompt,
+    batchAddPaymentPrompt,
   } = useWorkbenchStore()
 
   const [keyword, setKeyword] = useState('')
@@ -40,6 +42,8 @@ export const DueQueue: React.FC = () => {
   const [assignModal, setAssignModal] = useState(false)
   const [selectedManager, setSelectedManager] = useState('')
   const [currentBill, setCurrentBill] = useState<Bill | null>(null)
+  const [assignPriority, setAssignPriority] = useState<1 | 2 | 3 | 4 | 5>(3)
+  const [assignNote, setAssignNote] = useState('')
   const [showRiskConcentration, setShowRiskConcentration] = useState(false)
 
   const filteredBills = useMemo(() => {
@@ -143,20 +147,23 @@ export const DueQueue: React.FC = () => {
   const handleConfirmAssign = () => {
     if (!selectedManager) return
     const manager = managers.find((m) => m.id === selectedManager)
-    if (currentBill && manager) {
-      assignBillToManager(currentBill.id, manager.id, manager.name)
-    } else {
-      selectedBillIds.forEach((bid) => {
-        const mgr = managers.find((m) => m.id === selectedManager)
-        if (mgr) {
-          const bill = bills.find((b) => b.id === bid)
-          if (bill) assignBillToManager(bid, mgr.id, mgr.name)
-        }
+    if (!manager) return
+    if (currentBill) {
+      assignBillToManager(currentBill.id, manager.id, manager.name, {
+        priority: assignPriority,
+        note: assignNote,
+      })
+    } else if (selectedBillIds.length > 0) {
+      batchAssignToManager(selectedBillIds, manager.id, manager.name, {
+        priority: assignPriority,
+        note: assignNote,
       })
     }
     setAssignModal(false)
     setCurrentBill(null)
     setSelectedManager('')
+    setAssignPriority(3)
+    setAssignNote('')
     clearBillSelection()
   }
 
@@ -401,7 +408,17 @@ export const DueQueue: React.FC = () => {
               <span className="text-sm text-[var(--color-text-secondary)]">
                 已选择 <b>{selectedBillIds.length}</b> 项
               </span>
-              <Button variant="outline" size="sm" icon={<Send size={14} />}>
+              <Button
+                variant="outline"
+                size="sm"
+                icon={<Send size={14} />}
+                onClick={() => {
+                  const { success } = batchAddPaymentPrompt(selectedBillIds, 'system')
+                  if (success > 0) {
+                    clearBillSelection()
+                  }
+                }}
+              >
                 批量提示付款
               </Button>
               <Button
@@ -467,6 +484,22 @@ export const DueQueue: React.FC = () => {
         okText="确认分配"
       >
         <div className="space-y-4">
+          {currentBill && (
+            <div className="p-3 bg-[var(--color-bg-tertiary)] rounded text-sm space-y-1">
+              <div className="flex justify-between">
+                <span className="text-[var(--color-text-muted)]">票据号码</span>
+                <span className="font-mono">{currentBill.billNo}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[var(--color-text-muted)]">票面金额</span>
+                <span className="font-medium">{formatAmountFull(currentBill.amount)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-[var(--color-text-muted)]">承兑人</span>
+                <span>{currentBill.acceptorName}</span>
+              </div>
+            </div>
+          )}
           <div>
             <label className="block text-sm text-[var(--color-text-secondary)] mb-1.5">
               选择客户经理 <span className="text-[var(--color-danger)]">*</span>
@@ -482,6 +515,44 @@ export const DueQueue: React.FC = () => {
                   label: `${m.name}（${m.department}，在办 ${m.pendingCount}）`,
                 })),
               ]}
+            />
+          </div>
+          <div>
+            <label className="block text-sm text-[var(--color-text-secondary)] mb-1.5">
+              任务优先级
+            </label>
+            <div className="flex gap-2">
+              {[1, 2, 3, 4, 5].map((p) => {
+                const labels: Record<number, string> = { 1: '紧急', 2: '高', 3: '中', 4: '低', 5: '常规' }
+                return (
+                  <button
+                    key={p}
+                    className={`flex-1 py-2 rounded border text-sm transition-colors ${
+                      assignPriority === p
+                        ? 'bg-[var(--color-primary)] text-white border-[var(--color-primary)]'
+                        : 'bg-white border-[var(--color-border)] hover:border-[var(--color-primary)]'
+                    }`}
+                    onClick={() => setAssignPriority(p as 1 | 2 | 3 | 4 | 5)}
+                  >
+                    {p} 级
+                    <div className="text-[10px] opacity-70 mt-0.5">
+                      {labels[p]}
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm text-[var(--color-text-secondary)] mb-1.5">
+              备注说明
+            </label>
+            <textarea
+              className="w-full px-3 py-2 bg-white border border-[var(--color-border)] rounded text-sm outline-none focus:border-[var(--color-primary)] focus:ring-1 focus:ring-[var(--color-primary-border)] resize-none"
+              rows={3}
+              placeholder="可填写跟单注意事项、特殊要求等..."
+              value={assignNote}
+              onChange={(e) => setAssignNote(e.target.value)}
             />
           </div>
           <div className="p-3 bg-[var(--color-bg-tertiary)] rounded text-xs text-[var(--color-text-muted)]">

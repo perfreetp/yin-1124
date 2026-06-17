@@ -126,6 +126,7 @@ export interface Assignment {
   priority: 1 | 2 | 3 | 4 | 5
   deadline?: string
   status: 'pending' | 'in_progress' | 'completed'
+  note?: string
 }
 
 export interface DailyPriority {
