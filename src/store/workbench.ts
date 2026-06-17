@@ -461,14 +461,30 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       let failed = 0
       const errors: { row: number; message: string }[] = []
       const validBills: Bill[] = []
+      const recordsToAdd: DisposalRecord[] = []
+      const nowStr = dayjs().format('YYYY-MM-DD HH:mm:ss')
 
       bills.forEach((bill, index) => {
         if (bill.billNo && bill.amount > 0 && bill.dueDate) {
-          validBills.push({
+          const newBill: Bill = {
             ...bill,
             id: `bill${Date.now()}-${index}-${Math.random().toString(36).slice(2, 4)}`,
-            createdAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
-            updatedAt: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+            createdAt: nowStr,
+            updatedAt: nowStr,
+          }
+          validBills.push(newBill)
+          recordsToAdd.push({
+            id: `rec${Date.now()}-${index}-${Math.random().toString(36).slice(2, 4)}`,
+            billId: newBill.id,
+            billNo: newBill.billNo,
+            type: 'import',
+            action: `票据入库（批量导入）`,
+            detail: `文件：${fileName}；入库时间：${nowStr}`,
+            operatorId: 'm001',
+            operatorName: '当前用户',
+            operatorRole: 'operation',
+            createdAt: nowStr,
+            ipAddress: '192.168.1.100',
           })
           success++
         } else {
@@ -480,7 +496,7 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       const importLog: ImportLog = {
         id: `imp${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         fileName,
-        importTime: dayjs().format('YYYY-MM-DD HH:mm:ss'),
+        importTime: nowStr,
         operator,
         totalCount: bills.length,
         successCount: success,
@@ -488,18 +504,10 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         errors: errors.length > 0 ? errors : undefined,
       }
 
-      if (success > 0) {
-        get().addDisposalRecord({
-          billId: validBills[0].id,
-          billNo: validBills[0].billNo,
-          type: 'import',
-          action: `批量导入票据 ${success} 张（来自 ${fileName}）`,
-        })
-      }
-
       set((state) => ({
         bills: [...validBills, ...state.bills],
         importLogs: [importLog, ...state.importLogs],
+        disposalRecords: [...recordsToAdd, ...state.disposalRecords],
       }))
 
       return { success, failed }

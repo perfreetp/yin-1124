@@ -1,7 +1,8 @@
 import React, { useState, useMemo } from 'react'
 import {
   BarChart3, PieChart, TrendingUp, AlertTriangle, FileText, Download, Calendar, Eye,
-  ShieldCheck, Clock, Users, DollarSign, CheckCircle2, XCircle
+  ShieldCheck, Clock, Users, DollarSign, CheckCircle2, XCircle, ChevronDown, ChevronRight,
+  Route, CircleDot, Send
 } from 'lucide-react'
 import { Card } from '@/components/Card'
 import { Button } from '@/components/Button'
@@ -11,7 +12,7 @@ import { Select } from '@/components/Form'
 import { Modal } from '@/components/Modal'
 import { StatCard } from '@/components/StatCard'
 import { useWorkbenchStore, formatAmountFull, formatAmount, getStatusLabel } from '@/store/workbench'
-import type { Bill, RiskReport } from '@/types'
+import type { Bill, RiskReport, DisposalRecord } from '@/types'
 import dayjs from 'dayjs'
 
 export const ManagementBoard: React.FC = () => {
@@ -20,6 +21,8 @@ export const ManagementBoard: React.FC = () => {
   const [selectedReport, setSelectedReport] = useState<RiskReport | null>(null)
   const [showInternalAudit, setShowInternalAudit] = useState(false)
   const [selectedAuditBill, setSelectedAuditBill] = useState<Bill | null>(null)
+  const [selectedTimelineBillId, setSelectedTimelineBillId] = useState<string | null>(null)
+  const [selectedTimelineRecord, setSelectedTimelineRecord] = useState<DisposalRecord | null>(null)
 
   const [auditKeyword, setAuditKeyword] = useState('')
   const [auditType, setAuditType] = useState<string>('all')
@@ -233,7 +236,62 @@ export const ManagementBoard: React.FC = () => {
         v ? <span className="text-[var(--color-text-secondary)]">{v}</span> : <span className="text-[var(--color-text-muted)]">-</span>,
     },
     { key: 'operatorName', title: '操作人', dataIndex: 'operatorName', width: 90 },
+    {
+      key: 'timeline',
+      title: '处置时间线',
+      width: 140,
+      align: 'center',
+      render: (_, record) => (
+        <div className="flex gap-1 justify-center">
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={<Route size={12} />}
+            onClick={() => {
+              setSelectedTimelineRecord(record)
+              setSelectedTimelineBillId(record.billId)
+            }}
+          >
+            完整时间线
+          </Button>
+        </div>
+      ),
+    },
   ]
+
+  const getTimelineForBill = (billId: string): DisposalRecord[] => {
+    return disposalRecords
+      .filter((r) => r.billId === billId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+  }
+
+  const getTimelineStepIcon = (type: string) => {
+    const map: Record<string, React.ReactNode> = {
+      import: <CircleDot size={14} />,
+      assignment: <Users size={14} />,
+      review: <CheckCircle2 size={14} />,
+      payment_prompt: <Send size={14} />,
+      payment_feedback: <CheckCircle2 size={14} />,
+      dishonor_record: <XCircle size={14} />,
+      recourse_action: <AlertTriangle size={14} />,
+      status_change: <Clock size={14} />,
+    }
+    return map[type] || <CircleDot size={14} />
+  }
+
+  const getTimelineStepColor = (type: string) => {
+    const map: Record<string, string> = {
+      import: 'bg-[var(--color-info)] border-[var(--color-info)]',
+      assignment: 'bg-[var(--color-primary)] border-[var(--color-primary)]',
+      review: 'bg-[var(--color-warning)] border-[var(--color-warning)]',
+      payment_prompt: 'bg-[var(--color-primary)] border-[var(--color-primary)]',
+      payment_feedback: 'bg-[var(--color-success)] border-[var(--color-success)]',
+      dishonor_record: 'bg-[var(--color-danger)] border-[var(--color-danger)]',
+      recourse_action: 'bg-[var(--color-warning)] border-[var(--color-warning)]',
+      status_change: 'bg-[var(--color-text-muted)] border-[var(--color-text-muted)]',
+    }
+    return map[type] || 'bg-[var(--color-border)] border-[var(--color-border)]'
+  }
 
   return (
     <div className="flex flex-col gap-4 h-full overflow-auto">
@@ -570,6 +628,121 @@ export const ManagementBoard: React.FC = () => {
         <div className="max-h-[50vh] overflow-auto">
           <Table columns={auditColumns} data={filteredAuditRecords} />
         </div>
+      </Modal>
+
+      <Modal
+        open={!!selectedTimelineBillId && !!selectedTimelineRecord}
+        title={
+          <div className="flex items-center gap-2">
+            <Route size={18} className="text-[var(--color-primary)]" />
+            票据完整处置时间线
+            {selectedTimelineRecord && (
+              <span className="font-mono text-sm text-[var(--color-text-muted)] ml-2">
+                {selectedTimelineRecord.billNo}
+              </span>
+            )}
+          </div>
+        }
+        width={800}
+        onClose={() => {
+          setSelectedTimelineBillId(null)
+          setSelectedTimelineRecord(null)
+        }}
+        footer={
+          <div className="flex justify-between w-full items-center">
+            <div className="text-xs text-[var(--color-text-muted)]">
+              {selectedTimelineBillId && getTimelineForBill(selectedTimelineBillId).length > 0 && (() => {
+                const tl = getTimelineForBill(selectedTimelineBillId)
+                return `共 ${tl.length} 条处置记录，从 ${tl[0].createdAt} 至 ${tl[tl.length - 1].createdAt}`
+              })()}
+            </div>
+            <Button variant="secondary" onClick={() => {
+              setSelectedTimelineBillId(null)
+              setSelectedTimelineRecord(null)
+            }}>关闭</Button>
+          </div>
+        }
+      >
+        {selectedTimelineBillId && selectedTimelineRecord && (() => {
+          const bill = bills.find((b) => b.id === selectedTimelineBillId)
+          const timeline = getTimelineForBill(selectedTimelineBillId)
+          if (timeline.length === 0) {
+            return <div className="p-8 text-center text-[var(--color-text-muted)]">暂无处置时间线</div>
+          }
+          const highlightId = selectedTimelineRecord.id
+          return (
+            <div className="space-y-4">
+              {bill && (
+                <div className="p-4 rounded bg-[var(--color-bg-tertiary)] grid grid-cols-4 gap-3 text-sm">
+                  <div>
+                    <div className="text-xs text-[var(--color-text-muted)] mb-0.5">票面金额</div>
+                    <div className="font-bold">{formatAmountFull(bill.amount)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[var(--color-text-muted)] mb-0.5">到期日期</div>
+                    <div className="font-bold">{bill.dueDate}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[var(--color-text-muted)] mb-0.5">承兑人</div>
+                    <div className="font-medium truncate" title={bill.acceptorName}>{bill.acceptorName}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-[var(--color-text-muted)] mb-0.5">当前状态</div>
+                    <div className="font-bold">{getStatusLabel(bill.status)}</div>
+                  </div>
+                </div>
+              )}
+
+              <div className="relative pl-8 py-2">
+                <div className="absolute left-3 top-2 bottom-2 w-0.5 bg-[var(--color-border)]" />
+                {timeline.map((step, idx) => {
+                  const isHighlight = step.id === highlightId
+                  const typeInfo = getDisposalTypeLabel(step.type)
+                  return (
+                    <div key={step.id} className={`mb-5 relative ${idx === timeline.length - 1 ? 'mb-0' : ''}`}>
+                      <div
+                        className={`absolute -left-5 top-1 w-4 h-4 rounded-full border-2 flex items-center justify-center text-white z-10 ${getTimelineStepColor(step.type)} ${
+                          isHighlight ? 'ring-4 ring-[var(--color-primary-border)] scale-110' : ''
+                        }`}
+                      >
+                        {getTimelineStepIcon(step.type)}
+                      </div>
+                      <div
+                        className={`p-3 rounded border ${
+                          isHighlight
+                            ? 'border-[var(--color-primary-border)] bg-[var(--color-primary-bg)] shadow-sm'
+                            : 'bg-white border-[var(--color-border)]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <Tag variant={typeInfo.color} size="sm">{typeInfo.label}</Tag>
+                            {isHighlight && (
+                              <Tag variant="primary" size="sm">当前查看</Tag>
+                            )}
+                            <span className="text-xs text-[var(--color-text-muted)]">
+                              第 {idx + 1} 步 / 共 {timeline.length} 步
+                            </span>
+                          </div>
+                          <div className="text-xs text-[var(--color-text-muted)]">{step.createdAt}</div>
+                        </div>
+                        <div className="text-sm text-[var(--color-text-primary)] font-medium mb-1">{step.action}</div>
+                        {step.detail && (
+                          <div className="text-xs text-[var(--color-text-secondary)]">{step.detail}</div>
+                        )}
+                        <div className="mt-2 flex gap-3 text-[11px] text-[var(--color-text-muted)]">
+                          <span>操作人：{step.operatorName}</span>
+                          {step.operatorRole && <span>角色：{step.operatorRole === 'operation' ? '运营岗' : step.operatorRole === 'risk' ? '风险岗' : step.operatorRole}</span>}
+                          {step.ipAddress && <span>IP：{step.ipAddress}</span>}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )
+        })()}
       </Modal>
     </div>
   )

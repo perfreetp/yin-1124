@@ -14,6 +14,14 @@ interface PreviewBill extends Partial<Bill> {
   _rowError?: string
   _rowNumber?: number
   _importStatus?: 'new' | 'exists'
+  _acceptorRisk?: {
+    exists: boolean
+    riskLevel?: string
+    concentratedCount?: number
+    concentratedDate?: string
+    dishonorRate?: number
+    performance?: string
+  }
 }
 
 interface FieldMapping {
@@ -128,7 +136,7 @@ function detectRiskLevel(daysToDue: number, amount: number): Bill['riskLevel'] {
 }
 
 export const BatchImport: React.FC = () => {
-  const { importLogs, importBills, bills } = useWorkbenchStore()
+  const { importLogs, importBills, bills, acceptors } = useWorkbenchStore()
   const [previewData, setPreviewData] = useState<PreviewBill[]>([])
   const [fileName, setFileName] = useState('')
   const [showPreview, setShowPreview] = useState(false)
@@ -142,6 +150,14 @@ export const BatchImport: React.FC = () => {
     bills.forEach((b) => set.add(b.billNo.trim().toUpperCase()))
     return set
   }, [bills])
+
+  const acceptorMap = useMemo(() => {
+    const map = new Map<string, typeof acceptors[0]>()
+    acceptors.forEach((a) => {
+      map.set(a.name.trim(), a)
+    })
+    return map
+  }, [acceptors])
 
   const parseRows = (rows: string[][]) => {
     if (rows.length < 2) {
@@ -186,6 +202,19 @@ export const BatchImport: React.FC = () => {
             : 'new'
           : undefined
 
+      let acceptorRisk: PreviewBill['_acceptorRisk'] | undefined
+      const matchedAcceptor = acceptorName ? acceptorMap.get(acceptorName.trim()) : undefined
+      if (matchedAcceptor) {
+        acceptorRisk = {
+          exists: true,
+          riskLevel: matchedAcceptor.riskLevel,
+          concentratedCount: matchedAcceptor.concentratedDueCount,
+          concentratedDate: matchedAcceptor.concentratedDueDate,
+          dishonorRate: matchedAcceptor.dishonorRate,
+          performance: matchedAcceptor.performance,
+        }
+      }
+
       const bill: PreviewBill = {
         billNo,
         amount,
@@ -200,6 +229,7 @@ export const BatchImport: React.FC = () => {
         _rowNumber: idx + 2,
         _rowError: errors.length > 0 ? errors.join('；') : undefined,
         _importStatus: importStatus,
+        _acceptorRisk: acceptorRisk,
       }
       return bill
     })
@@ -343,14 +373,37 @@ export const BatchImport: React.FC = () => {
       render: (v) => v ? <span className="font-mono text-xs">{v}</span> : <span className="text-[var(--color-danger)]">缺失</span> },
     { key: 'amount', title: '票面金额(元)', dataIndex: 'amount', align: 'right',
       render: (v) => v > 0 ? formatAmountFull(v) : <span className="text-[var(--color-danger)]">无效</span> },
-    { key: 'issueDate', title: '出票日期', dataIndex: 'issueDate',
-      render: (v) => v || <span className="text-[var(--color-text-muted)]">空</span> },
     { key: 'dueDate', title: '到期日期', dataIndex: 'dueDate',
       render: (v) => v ? v : <span className="text-[var(--color-danger)]">无效</span> },
     { key: 'acceptorName', title: '承兑人', dataIndex: 'acceptorName',
-      render: (v) => v || <span className="text-[var(--color-text-muted)]">空</span> },
-    { key: 'drawer', title: '出票人', dataIndex: 'drawer',
-      render: (v) => v || <span className="text-[var(--color-text-muted)]">空</span> },
+      render: (v, record) => (
+        <div>
+          <div>{v || <span className="text-[var(--color-text-muted)]">空</span>}</div>
+          {record._acceptorRisk?.exists && (
+            <div className="mt-0.5 flex flex-wrap gap-1">
+              {record._acceptorRisk.riskLevel && (
+                record._acceptorRisk.riskLevel === 'critical' || record._acceptorRisk.riskLevel === 'high' ? (
+                  <Tag variant="danger" size="sm">
+                    <AlertTriangle size={10} className="mr-0.5" />
+                    {record._acceptorRisk.riskLevel === 'critical' ? '极高风险' : '高风险'}
+                  </Tag>
+                ) : record._acceptorRisk.riskLevel === 'medium' ? (
+                  <Tag variant="warning" size="sm">中风险</Tag>
+                ) : null
+              )}
+              {record._acceptorRisk.dishonorRate && record._acceptorRisk.dishonorRate >= 3 && (
+                <Tag variant="warning" size="sm">拒付率 {record._acceptorRisk.dishonorRate}%</Tag>
+              )}
+              {record._acceptorRisk.concentratedCount && record._acceptorRisk.concentratedCount >= 3 && (
+                <Tag variant="warning" size="sm">
+                  集中到期 {record._acceptorRisk.concentratedCount} 张
+                </Tag>
+              )}
+            </div>
+          )}
+        </div>
+      )
+    },
     { key: 'holdType', title: '持有类型', dataIndex: 'holdType',
       render: (v) => v === 'endorsed' ? <Tag variant="info">已背书</Tag> : <Tag variant="primary">自持</Tag> },
     {
@@ -402,6 +455,26 @@ export const BatchImport: React.FC = () => {
   const successCount = previewData.length - errorCount
   const newCount = previewData.filter((b) => !b._rowError && b._importStatus === 'new').length
   const existsCount = previewData.filter((b) => !b._rowError && b._importStatus === 'exists').length
+
+  const highRiskAcceptors = useMemo(() => {
+    const map = new Map<string, { count: number; riskLevel: string; concentratedCount?: number; concentratedDate?: string; dishonorRate?: number }>()
+    previewData.forEach((b) => {
+      if (b._acceptorRisk?.exists && (b._acceptorRisk.riskLevel === 'critical' || b._acceptorRisk.riskLevel === 'high' || (b._acceptorRisk.concentratedCount ?? 0) >= 3 || (b._acceptorRisk.dishonorRate ?? 0) >= 3)) {
+        const accName = b.acceptorName ?? ''
+        if (!map.has(accName)) {
+          map.set(accName, {
+            count: 0,
+            riskLevel: b._acceptorRisk.riskLevel ?? 'low',
+            concentratedCount: b._acceptorRisk.concentratedCount,
+            concentratedDate: b._acceptorRisk.concentratedDate,
+            dishonorRate: b._acceptorRisk.dishonorRate,
+          })
+        }
+        map.get(accName)!.count++
+      }
+    })
+    return Array.from(map.entries())
+  }, [previewData])
 
   return (
     <div className="flex flex-col gap-4 h-full">
@@ -510,6 +583,31 @@ export const BatchImport: React.FC = () => {
           </div>
         }
       >
+        {highRiskAcceptors.length > 0 && (
+          <div className="mb-4 p-3 rounded border border-[var(--color-warning-border)] bg-[var(--color-warning-bg)]">
+            <div className="flex items-center gap-2 mb-2">
+              <AlertTriangle size={16} className="text-[var(--color-warning)] shrink-0" />
+              <span className="font-medium text-[var(--color-warning)]">
+                识别到 {highRiskAcceptors.length} 个高风险承兑人，请重点关注
+              </span>
+            </div>
+            <div className="space-y-1.5 text-sm">
+              {highRiskAcceptors.map(([name, info]) => (
+                <div key={name} className="flex items-start gap-2">
+                  <span className="font-medium text-[var(--color-text-primary)] shrink-0">{name}</span>
+                  <span className="text-[var(--color-text-secondary)]">
+                    <Tag variant={info.riskLevel === 'critical' ? 'danger' : info.riskLevel === 'high' ? 'danger' : 'warning'} size="sm" className="mr-1">
+                      {info.riskLevel === 'critical' ? '极高风险' : info.riskLevel === 'high' ? '高风险' : '中风险'}
+                    </Tag>
+                    <span className="mr-2">本次导入 {info.count} 张</span>
+                    {info.dishonorRate && info.dishonorRate >= 3 && <span className="mr-2">拒付率 {info.dishonorRate}%</span>}
+                    {info.concentratedCount && info.concentratedCount >= 3 && <span>{info.concentratedDate} 前后集中到期 {info.concentratedCount} 张</span>}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
         <div className="max-h-[60vh] overflow-auto">
           <Table columns={previewColumns} data={previewData} />
         </div>
