@@ -861,8 +861,20 @@ export const DueQueue: React.FC = () => {
                 <div className="flex"><span className="w-24 text-[var(--color-text-muted)] shrink-0">承兑人</span><span className="font-medium">{detailBill.acceptorName}</span></div>
                 <div className="flex"><span className="w-24 text-[var(--color-text-muted)] shrink-0">出票人</span><span>{detailBill.drawer || '-'}</span></div>
                 <div className="flex"><span className="w-24 text-[var(--color-text-muted)] shrink-0">收款人</span><span>{detailBill.payee || '-'}</span></div>
-                <div className="flex"><span className="w-24 text-[var(--color-text-muted)] shrink-0">客户经理</span><span>{detailBill.managerName || '<span className="text-[var(--color-warning)]">未分配</span>'}</span></div>
-                <div className="flex"><span className="w-24 text-[var(--color-text-muted)] shrink-0">复核状态</span><span>{detailBill.requiresReview ? (detailBill.reviewed ? '已复核' : '<span className="text-[var(--color-warning)]">待复核</span>') : '无需复核'}</span></div>
+                <div className="flex items-start"><span className="w-24 text-[var(--color-text-muted)] shrink-0 pt-0.5">客户经理</span><span>{detailBill.managerName ? detailBill.managerName : <Tag variant="warning" size="sm">未分配</Tag>}</span></div>
+                <div className="flex items-start"><span className="w-24 text-[var(--color-text-muted)] shrink-0 pt-0.5">复核状态</span><span>
+                  {detailBill.requiresReview ? (
+                    detailBill.reviewed ? (
+                      detailBill.reviewStatus === 'approved'
+                        ? <Tag variant="success" size="sm"><CheckCircle2 size={10} className="mr-0.5" />已复核通过</Tag>
+                        : <Tag variant="danger" size="sm"><XCircle size={10} className="mr-0.5" />复核驳回</Tag>
+                    ) : (
+                      <Tag variant="warning" size="sm"><AlertTriangle size={10} className="mr-0.5" />待复核</Tag>
+                    )
+                  ) : (
+                    <Tag variant="default" size="sm">无需复核</Tag>
+                  )}
+                </span></div>
                 <div className="flex"><span className="w-24 text-[var(--color-text-muted)] shrink-0">最后更新</span><span>{detailBill.updatedAt || '-'}</span></div>
               </div>
             </Card>

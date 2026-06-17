@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useMemo } from 'react'
-import { Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download, Trash2, Eye, RefreshCw, Minus } from 'lucide-react'
+import { Upload, FileSpreadsheet, AlertCircle, CheckCircle2, Download, Trash2, Eye, RefreshCw, Minus, AlertTriangle } from 'lucide-react'
 import * as XLSX from 'xlsx'
 import { Card } from '@/components/Card'
 import { Button } from '@/components/Button'
@@ -340,28 +340,33 @@ export const BatchImport: React.FC = () => {
   const handleConfirmImport = () => {
     const validBills = previewData
       .filter((b) => !b._rowError && b._importStatus !== 'exists')
-      .map((b) => ({
-        id: '',
-        billNo: b.billNo!,
-        amount: b.amount!,
-        issueDate: b.issueDate || dayjs().subtract(180, 'day').format('YYYY-MM-DD'),
-        dueDate: b.dueDate!,
-        daysToDue: b.daysToDue ?? 999,
-        acceptorId: 'acc_new',
-        acceptorName: b.acceptorName || '未知承兑人',
-        drawer: b.drawer || '-',
-        payee: b.payee || '-',
-        status: b.holdType === 'endorsed' ? 'endorsed' : 'holding',
-        holdType: b.holdType || 'self_held',
-        requiresReview: (b.amount || 0) >= 5000000,
-        reviewed: (b.amount || 0) < 5000000,
-        riskLevel: b.riskLevel || 'low',
-        tags: [],
-        createdAt: '',
-        updatedAt: '',
-      }))
+      .map((b) => {
+        const accName = (b.acceptorName || '未知承兑人').trim()
+        const matched = acceptorMap.get(accName)
+        let acceptorId = matched ? matched.id : `acc_${btoa(encodeURIComponent(accName)).replace(/[^a-zA-Z0-9]/g, '').slice(0, 16).toLowerCase()}`
+        return {
+          id: '',
+          billNo: b.billNo!,
+          amount: b.amount!,
+          issueDate: b.issueDate || dayjs().subtract(180, 'day').format('YYYY-MM-DD'),
+          dueDate: b.dueDate!,
+          daysToDue: b.daysToDue ?? 999,
+          acceptorId,
+          acceptorName: accName,
+          drawer: b.drawer || '-',
+          payee: b.payee || '-',
+          status: b.holdType === 'endorsed' ? 'endorsed' : 'holding',
+          holdType: b.holdType || 'self_held',
+          requiresReview: (b.amount || 0) >= 5000000,
+          reviewed: (b.amount || 0) < 5000000,
+          riskLevel: (matched?.riskLevel as any) || b.riskLevel || 'low',
+          tags: [],
+          createdAt: '',
+          updatedAt: '',
+        }
+      })
 
-    importBills(validBills as Bill[], fileName, '当前用户')
+    importBills(validBills as Bill[], fileName, '当前用户', acceptorMap)
     setShowPreview(false)
     setPreviewData([])
     setFileName('')

@@ -127,7 +127,7 @@ interface WorkbenchState {
     }
   ) => void
 
-  importBills: (bills: Bill[], fileName: string, operator: string) => { success: number; failed: number }
+  importBills: (bills: Bill[], fileName: string, operator: string, acceptorMap?: Map<string, Acceptor>) => { success: number; failed: number }
 }
 
 const getInitialState = (): Omit<WorkbenchState,
@@ -456,13 +456,14 @@ export const useWorkbenchStore = create<WorkbenchState>()(
       }))
     },
 
-    importBills: (bills, fileName, operator) => {
+    importBills: (bills, fileName, operator, acceptorMap) => {
       let success = 0
       let failed = 0
       const errors: { row: number; message: string }[] = []
       const validBills: Bill[] = []
       const recordsToAdd: DisposalRecord[] = []
       const nowStr = dayjs().format('YYYY-MM-DD HH:mm:ss')
+      const acceptorMapArg: Map<string, Acceptor> = acceptorMap || new Map()
 
       bills.forEach((bill, index) => {
         if (bill.billNo && bill.amount > 0 && bill.dueDate) {
@@ -504,10 +505,80 @@ export const useWorkbenchStore = create<WorkbenchState>()(
         errors: errors.length > 0 ? errors : undefined,
       }
 
+      const updatedAcceptorMap = new Map(get().acceptors.map((a) => [a.name, a]))
+      acceptorMapArg.forEach((acc) => updatedAcceptorMap.set(acc.name, acc))
+
+      const newAcceptorsMap = new Map<string, Bill[]>()
+      validBills.forEach((b) => {
+        const key = b.acceptorName
+        if (!newAcceptorsMap.has(key)) newAcceptorsMap.set(key, [])
+        newAcceptorsMap.get(key)!.push(b)
+      })
+
+      const updatedAcceptors: Acceptor[] = get().acceptors.map((a) => ({ ...a }))
+      newAcceptorsMap.forEach((accBills, accName) => {
+        const existing = updatedAcceptors.find((a) => a.name === accName)
+        if (existing) {
+          const pendingBills = get().bills
+            .filter((b) => b.acceptorName === accName && b.status !== 'paid' && b.status !== 'closed')
+            .concat(accBills)
+          existing.pendingCount = pendingBills.length
+          existing.pendingAmount = pendingBills.reduce((s, b) => s + b.amount, 0)
+          existing.totalBills = existing.totalBills + accBills.length
+          existing.totalAmount = existing.totalAmount + accBills.reduce((s, b) => s + b.amount, 0)
+
+          const dueDates = pendingBills
+            .filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30)
+            .map((b) => b.dueDate)
+          const concentratedCount = dueDates.length
+          if (concentratedCount >= 3) {
+            existing.concentratedDueCount = concentratedCount
+            existing.concentratedDueDate = dueDates.sort()[0]
+            existing.concentratedDueAmount = pendingBills
+              .filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30)
+              .reduce((s, b) => s + b.amount, 0)
+          }
+        } else {
+          const firstBill = accBills[0]
+          updatedAcceptors.push({
+            id: firstBill.acceptorId,
+            name: accName,
+            creditCode: `CREDIT_${Math.random().toString(36).slice(2, 12).toUpperCase()}`,
+            industry: '未分类',
+            region: '未分类',
+            totalBills: accBills.length,
+            totalAmount: accBills.reduce((s, b) => s + b.amount, 0),
+            pendingCount: accBills.length,
+            pendingAmount: accBills.reduce((s, b) => s + b.amount, 0),
+            dishonorCount: 0,
+            dishonorRate: 0,
+            avgPaymentDays: 1,
+            lastPaymentDate: dayjs().format('YYYY-MM-DD'),
+            performance: 'normal',
+            riskLevel: accBills.some((b) => b.riskLevel === 'critical')
+              ? 'critical'
+              : accBills.some((b) => b.riskLevel === 'high')
+              ? 'high'
+              : 'medium',
+            tags: ['新入库承兑人'],
+            concentratedDueCount: accBills.filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30).length >= 3
+              ? accBills.filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30).length
+              : undefined,
+            concentratedDueDate: accBills.filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30).length >= 3
+              ? accBills.filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30).map((b) => b.dueDate).sort()[0]
+              : undefined,
+            concentratedDueAmount: accBills.filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30).length >= 3
+              ? accBills.filter((b) => b.daysToDue >= 0 && b.daysToDue <= 30).reduce((s, b) => s + b.amount, 0)
+              : undefined,
+          })
+        }
+      })
+
       set((state) => ({
         bills: [...validBills, ...state.bills],
         importLogs: [importLog, ...state.importLogs],
         disposalRecords: [...recordsToAdd, ...state.disposalRecords],
+        acceptors: updatedAcceptors,
       }))
 
       return { success, failed }
